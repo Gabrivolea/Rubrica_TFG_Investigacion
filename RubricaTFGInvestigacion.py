@@ -141,7 +141,7 @@ st.sidebar.download_button(
     file_name="progreso_rubrica_investigacion.json",
     mime="application/json",
     use_container_width=True,
-    help="Descarga este archivo para guardar tus correcciones y bocadillos de comentarios en tu ordenador."
+    help="Descarga este archivo para guardar tus correcciones en tu ordenador."
 )
 
 # ---------------- LÓGICA MATEMÁTICA DE PLAGIO LOCAL (COSENO) ----------------
@@ -167,12 +167,6 @@ def extraer_texto_pdf(archivo_bytes):
         return texto
     except:
         return ""
-
-def insertar_comentario_bocadillo(item_key, texto_bocadillo, i):
-    com_key = f"com_{i}_{item_key}"
-    actual = st.session_state.get(com_key, "")
-    nuevo_texto = f"{actual} | {texto_bocadillo}".strip(" |") if actual else texto_bocadillo
-    st.session_state[com_key] = nuevo_texto
 
 # ---------------- GENERADOR DE BOLETÍN HTML ----------------
 def generar_html_alumno(eval_actual, rubrica_dinamica, nota_final, total_puntos_max, puntos_obtenidos):
@@ -285,15 +279,8 @@ st.markdown("""
     .block-container { padding-top: 1rem !important; padding-bottom: 1rem !important; }
     .seccion-titulo { font-size: 16px; font-weight: bold; color: #2E86C1; margin-top: 20px; margin-bottom: 10px; border-bottom: 1px solid #e0e0e0; padding-bottom: 3px; }
     .caja-nota { border: 2px solid #888888; padding: 10px; text-align: center; border-radius: 8px; margin-top: 10px; }
-    div[data-testid="InputInstructions"] { display: none !important; visibility: hidden !important; }
-    div[data-testid="stTextInput"] input { padding: 4px 10px !important; font-size: 13px !important; }
     .edit-row { background-color: #f8f9f9; padding: 8px; border-radius: 6px; margin-bottom: 4px; border: 1px solid #e5e7e9; }
     .edit-section { background-color: #ebf5fb; padding: 10px; border-radius: 6px; margin-top: 15px; margin-bottom: 5px; border-left: 4px solid #3498db; }
-    div[data-testid="stTextInput"] + div div[data-testid="stHorizontalBlock"] button {
-        border-radius: 16px !important; background-color: #EBF5FB !important; color: #2E86C1 !important;
-        border: 1px solid #AED6F1 !important; font-size: 11.5px !important; padding: 2px 8px !important; margin-top: 2px !important;
-    }
-    div[data-testid="stTextInput"] + div div[data-testid="stHorizontalBlock"] button:hover { background-color: #2E86C1 !important; color: white !important; border-color: #2E86C1 !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -352,68 +339,73 @@ with tab_evaluacion:
             st.markdown("### Hoja de Evaluación")
             eval_actual["alumno"] = st.text_input("Nombre del Alumno / Grupo", value=eval_actual["alumno"])
             
-            # FILTRO OPTIMIZADO PARA LA NUBE: EVITA EL COLAPSO DEL NAVEGADOR
-            secciones_visibles = [sec for sec in rubrica_dinamica if sec["visible"]]
-            nombres_secciones = [sec["nombre"] for sec in secciones_visibles]
-            
-            if nombres_secciones:
-                sec_elegida_nombre = st.selectbox("📁 Selecciona el apartado a evaluar:", options=nombres_secciones)
-                sec_actual = next(sec for sec in secciones_visibles if sec["nombre"] == sec_elegida_nombre)
-                criterios_visibles = [c for c in sec_actual["criterios"] if c["visible"]]
-                
-                st.markdown(f"<div class='seccion-titulo'>🔹 {sec_actual['nombre']}</div>", unsafe_allow_html=True)
-                
-                with st.container(height=500):
-                    if not criterios_visibles:
-                        st.info("No hay criterios visibles en este apartado.")
+            # --- CONSTRUCCIÓN DE LA TABLA DINÁMICA DE DATOS ---
+            filas_tabla = []
+            for sec in rubrica_dinamica:
+                if not sec["visible"]: continue 
+                for crit in sec["criterios"]:
+                    if not crit["visible"]: continue
+                    key = crit["id"]
                     
-                    for crit in criterios_visibles:
-                        key = crit["id"]
-                        texto_criterio = crit["texto"]
-                        peso = int(crit.get("peso", 1))
-                        sel_key = f"sel_{idx}_{key}"
-                        com_key = f"com_{idx}_{key}"
+                    val_previo = eval_actual["respuestas"].get(key, "No evaluado")
+                    if isinstance(val_previo, bool): val_previo = "5" if val_previo else "1"
+                    val_str = str(val_previo) if val_previo != "No evaluado" else "No evaluado"
+                    
+                    com_previo = eval_actual.get("comentarios_items", {}).get(key, "")
+                    
+                    filas_tabla.append({
+                        "id_oculto": key,
+                        "Apartado": sec["nombre"],
+                        "Criterio": crit["texto"],
+                        "Peso": crit.get("peso", 1),
+                        "Nota": val_str,
+                        "Comentario": com_previo
+                    })
+            
+            total_puntos_max = 0
+            puntos_obtenidos = 0
+
+            if filas_tabla:
+                df_rubrica = pd.DataFrame(filas_tabla)
+                
+                # Renderizar Data Editor interactivo
+                edited_df = st.data_editor(
+                    df_rubrica,
+                    column_config={
+                        "id_oculto": None, # Se oculta la ID interna
+                        "Apartado": st.column_config.TextColumn("Apartado", disabled=True, width=200),
+                        "Criterio": st.column_config.TextColumn("Criterio", disabled=True, width=450),
+                        "Peso": st.column_config.NumberColumn("Peso (x)", disabled=True, width=50),
+                        "Nota": st.column_config.SelectboxColumn("Nota", options=["No evaluado", "1", "2", "3", "4", "5"], required=True, width=100),
+                        "Comentario": st.column_config.TextColumn("Comentarios del profesor", width=400)
+                    },
+                    hide_index=True,
+                    use_container_width=True, # Fuerza el scroll horizontal
+                    height=600 # Fuerza el scroll vertical
+                )
+                
+                # Actualizar el diccionario interno con los datos editados de la tabla y calcular la nota al vuelo
+                for index, row in edited_df.iterrows():
+                    key = row["id_oculto"]
+                    val_str = row["Nota"]
+                    peso = int(row["Peso"])
+                    
+                    comentario = str(row["Comentario"])
+                    if comentario == "nan" or comentario == "None": comentario = ""
+                    
+                    if val_str != "No evaluado":
+                        val_num = int(val_str)
+                        eval_actual["respuestas"][key] = val_num
+                        total_puntos_max += (5 * peso)
+                        puntos_obtenidos += (val_num * peso)
+                    else:
+                        eval_actual["respuestas"][key] = "No evaluado"
                         
-                        val_previo = eval_actual["respuestas"].get(key, "No evaluado")
-                        if isinstance(val_previo, bool): val_previo = 5 if val_previo else 1
-                        if sel_key not in st.session_state: st.session_state[sel_key] = val_previo
-                        val_actual = st.session_state.get(sel_key, "No evaluado")
-                        
-                        if com_key not in st.session_state: st.session_state[com_key] = eval_actual["comentarios_items"].get(key, "")
-                        
-                        historial_item = set()
-                        for ev in st.session_state.evaluaciones:
-                            com_previo = ev.get("comentarios_items", {}).get(key, "").strip()
-                            if com_previo:
-                                for linea in com_previo.split('|'):
-                                    linea_limpia = linea.strip()
-                                    if linea_limpia: historial_item.add(linea_limpia)
-                        
-                        ancho_izq = 8.5 if not activar_visor else 5.5
-                        col_txt, col_val = st.columns([ancho_izq, 1.5])
-                        txt_peso = f" (Peso: x{peso})" if peso != 1 else ""
-                        texto_nota = f"[{val_actual}/5]{txt_peso}" if val_actual != "No evaluado" else f"[N/E]{txt_peso}"
-                        color_etiqueta = "#2E86C1" if val_actual != "No evaluado" else "#95A5A6"
-                        
-                        with col_txt:
-                            st.markdown(f"<div style='display:flex; align-items:flex-start; margin-bottom: 2px;'><span style='color: {color_etiqueta}; font-weight: bold; margin-right: 8px; font-size: 14px;'>{texto_nota}</span><p style='font-size: 13.5px; margin-top: 0px; margin-bottom: 0px; line-height: 1.2;'>{texto_criterio}</p></div>", unsafe_allow_html=True)
-                            st.text_input("Comentario", key=com_key, placeholder="📝 Nota...", label_visibility="collapsed")
-                            eval_actual["comentarios_items"][key] = st.session_state[com_key]
-                            
-                            if historial_item:
-                                lista_pills = sorted(list(historial_item))
-                                chunks = [lista_pills[x:x+3] for x in range(0, len(lista_pills), 3)]
-                                for c_idx, chunk in enumerate(chunks):
-                                    cols_bocadillos = st.columns(len(chunk))
-                                    for idx_pill, texto_pill in enumerate(chunk):
-                                        with cols_bocadillos[idx_pill]:
-                                            st.button(f"💬 {texto_pill}", key=f"pill_{idx}_{key}_{texto_pill}_{c_idx}_{idx_pill}", on_click=insertar_comentario_bocadillo, args=(key, texto_pill, idx), use_container_width=True)
-                                
-                        with col_val:
-                            st.selectbox("Nota", options=["No evaluado", 1, 2, 3, 4, 5], key=sel_key, label_visibility="collapsed")
-                            eval_actual["respuestas"][key] = st.session_state[sel_key]
-                        
-                        st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
+                    eval_actual["comentarios_items"][key] = comentario
+            else:
+                st.info("No hay criterios visibles en la rúbrica.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
                             
             # SECCIONES GLOBALES (SIEMPRE VISIBLES ABAJO)
             st.markdown("<div class='seccion-titulo'>🔹 Originalidad e IA</div>", unsafe_allow_html=True)
@@ -440,24 +432,11 @@ with tab_evaluacion:
             with col_título: st.markdown("<div class='seccion-titulo'>🔹 Observaciones Finales</div>", unsafe_allow_html=True)
             with col_hist_obs:
                 opciones_obs = ["Autocompletar..."] + sorted(list(historial_obs)) if historial_obs else ["--- Vacío ---"]
-                st.selectbox("🕒 Hist", options=opciones_obs, key=f"sel_obs_{idx}", on_change=aplicar_historial_obs, args=(idx,), label_visibility="collapsed")
+                st.selectbox("🕒 Historial de conclusiones", options=opciones_obs, key=f"sel_obs_{idx}", on_change=aplicar_historial_obs, args=(idx,), label_visibility="collapsed")
             st.text_area("Conclusiones:", key=obs_key, height=120, label_visibility="collapsed")
             eval_actual["observaciones"] = st.session_state[obs_key]
 
     if not modo_edicion:
-        # CÁLCULO DE NOTA DINÁMICO RECORRIENDO TODA LA BASE DE DATOS INTERNA
-        total_puntos_max = 0
-        puntos_obtenidos = 0
-        for s in rubrica_dinamica:
-            if not s["visible"]: continue
-            for c in s["criterios"]:
-                if not c["visible"]: continue
-                v_final = eval_actual["respuestas"].get(c["id"], "No evaluado")
-                p_criterio = int(c.get("peso", 1))
-                if v_final != "No evaluado":
-                    total_puntos_max += (5 * p_criterio)
-                    puntos_obtenidos += (int(v_final) * p_criterio)
-        
         st.divider()
         nota_final = (puntos_obtenidos / total_puntos_max) * 10 if total_puntos_max > 0 else 0
         html_boletin = generar_html_alumno(eval_actual, rubrica_dinamica, nota_final, total_puntos_max, puntos_obtenidos)
